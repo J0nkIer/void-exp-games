@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Dream Maze V12</title>
+
+<style>
+html, body {
+    margin: 0;
+    overflow: hidden;
+    background: black;
+    cursor: crosshair;
+}
+canvas {
+    display: block;
+}
+</style>
+
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<script>
+
+const canvas = document.getElementById("game");
+const mazeCanvas = document.createElement("canvas");
+mazeCanvas.width = window.innerWidth;
+mazeCanvas.height = window.innerHeight;
+const mazeCtx = mazeCanvas.getContext("2d");
+
+window.addEventListener("resize", ()=>{
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    mazeCanvas.width = window.innerWidth;
+    mazeCanvas.height = window.innerHeight;
+});
+
+const gl = canvas.getContext("webgl");
+
+// ===== VERTEX SHADER =====
+const vertexShaderSource = `
+attribute vec2 a_position;
+varying vec2 v_uv;
+void main(){
+    v_uv = a_position * 0.5 + 0.5;
+    gl_Position = vec4(a_position,0.0,1.0);
+}
+`;
+
+// ===== FRAGMENT SHADER =====
+const fragmentShaderSource = `
+precision mediump float;
+
+uniform sampler2D u_texture;
+uniform float u_time;
+uniform int u_event;        // teleport event ID
+uniform float u_eventStrength;
+
+varying vec2 v_uv;
+
+// ===== CRT CURVE =====
+vec2 crtCurve(vec2 uv){
+    uv = uv*2.0 - 1.0;
+    float curve = 0.15;
+    uv.x *= 1.0 + pow(abs(uv.y),2.0)*curve;
+    uv.y *= 1.0 + pow(abs(uv.x),2.0)*curve;
+    return uv*0.5 + 0.5;
+}
+
+void main(){
+    float t = u_time;
+    vec2 uv = v_uv;
+
+    // CRT curve
+    uv = crtCurve(uv);
+
+    if(uv.x<0.0 || uv.x>1.0 || uv.y<0.0 || uv.y>1.0){
+        gl_FragColor = vec4(0.0,0.0,0.0,1.0);
+        return;
+    }
+
+    // Base distortion / wobble
+    uv.x += sin(uv.y*8.0 + t)*0.002;
+    uv.y += cos(uv.x*8.0 + t*1.2)*0.002;
+
+    // VHS line tearing
+    float tearLine = fract(t*0.2);
+    if(abs(uv.y-tearLine)<0.01){
+        uv.x += 0.08;
+    }
+
+    // VHS tracking
+    uv.x += sin(t*0.5)*0.003;
+
+    // ===== TELEPORT EVENTS =====
+    if(u_event==7){ // Delayed World
+        uv += sin(t*3.0 + uv.y*10.0)*0.01*u_eventStrength;
+    }
+    if(u_event==8){ // Geometry Drift
+        uv.x += fract(uv.y*20.0+t)*0.01*u_eventStrength;
+    }
+    if(u_event==9){ // Depth Collapse
+        vec2 center = uv-0.5;
+        uv -= center*0.4*u_eventStrength;
+    }
+    if(u_event==10){ // Soft Reset Glitch
+        if(fract(t*2.0)<0.5){
+            gl_FragColor = vec4(1.0,1.0,1.0,1.0);
+            return;
+        }
+    }
+    if(u_event==11){ // Texture Melting
+        uv.y += fract(t*0.3 + uv.x*6.0)*0.05*u_eventStrength;
+    }
+    if(u_event==12){ // Silent Frame Skip
+        if(fract(t*5.0)>0.5){
+            uv.x += 0.03*u_eventStrength;
+        }
+    }
+
+    // Sample texture
+    vec4 color = texture2D(u_texture, uv);
+
+    // Chromatic aberration
+    float r = texture2D(u_texture, uv + vec2(0.003,0.0)).r;
+    float g = texture2D(u_texture, uv).g;
+    float b = texture2D(u_texture, uv - vec2(0.003,0.0)).b;
+    color = vec4(r,g,b,1.0);
+
+    // Color banding
+    float bands = floor(color.r*8.0)/8.0;
+    color.rgb = mix(color.rgb, vec3(bands), 0.15);
+
+    // Scanlines
+    float scan = sin(uv.y*900.0)*0.05;
+    color.rgb -= scan;
+
+    // Vignette
+    float dist = distance(v_uv, vec2(0.5));
+    color.rgb *= smoothstep(0.8, 0.4, dist);
+
+    gl_FragColor = color;
+}
+`;
+
+// ===== Compile =====
+function compileShader(gl,type,source){
+    let shader = gl.createShader(type);
+    gl.shaderSource(shader,source);
+    gl.compileShader(shader);
+    if(!gl.getShaderParameter(shader,gl.COMPILE_STATUS)){
+        console.error(gl.getShaderInfoLog(shader));
+        return null;
+    }
+    return shader;
+}
+
+const vertexShader = compileShader(gl, gl.VERTEX_SHADER, vertexShaderSource);
+const fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, fragmentShaderSource);
+
+const program = gl.createProgram();
+gl.attachShader(program, vertexShader);
+gl.attachShader(program, fragmentShader);
+gl.linkProgram(program);
+gl.useProgram(program);
+
+// ===== Fullscreen Quad =====
+let positionLoc = gl.getAttribLocation(program,"a_position");
+let buffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([
+    -1,-1, 1,-1, -1,1,
+    -1,1, 1,-1, 1,1
+]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(positionLoc);
+gl.vertexAttribPointer(positionLoc,2,gl.FLOAT,false,0,0);
+
+// ===== Texture =====
+let texture = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, texture);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+let timeLoc = gl.getUniformLocation(program,"u_time");
+let eventLoc = gl.getUniformLocation(program,"u_event");
+let strengthLoc = gl.getUniformLocation(program,"u_eventStrength");
+
+// ===== Shader API =====
+window.shaderAPI = {
+    setEvent: (id,strength)=>{ gl.uniform1i(eventLoc,id); gl.uniform1f(strengthLoc,strength); },
+    setTime: t=>{ gl.uniform1f(timeLoc,t); },
+    bindTexture: ()=>{ gl.uniform1i(gl.getUniformLocation(program,"u_texture"),0); }
+};
+
+/* ================================
+   GAME LOOP
+================================ */
+
+function loop(){
+    move();
+    drawMaze();
+
+    gl.viewport(0,0,canvas.width,canvas.height);
+    window.shaderAPI.setTime(Date.now()*0.001);
+
+    // u_event: map teleportEvent.type to an integer
+    let eventID = 0; 
+    if(teleportEvent.active){
+        // Map your types to IDs: 7=Delayed, 8=Geom Drift, 9=Depth Collapse, etc.
+        switch(teleportEvent.type){
+            case "delayedWorld": eventID=7; break;
+            case "geometryDrift": eventID=8; break;
+            case "depthCollapse": eventID=9; break;
+            case "softReset": eventID=10; break;
+            case "textureMelting": eventID=11; break;
+            case "silentFrameSkip": eventID=12; break;
+        }
+    }
+
+    if(!isPaused){
+        move();
+    }
+
+    window.shaderAPI.setEvent(eventID, teleportEvent.active?1.0:0);
+
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,mazeCanvas);
+
+    window.shaderAPI.bindTexture();
+    gl.drawArrays(gl.TRIANGLES,0,6);
+
+    requestAnimationFrame(loop);
+}
+
+// ===== MUSIC PLAYLIST =====
+const tracks = [
+    "bg.mp3"
+];
+
+let currentTrack = 0;
+const bgMusic = new Audio(tracks[currentTrack]);
+bgMusic.volume = 0.45;
+
+function playNextTrack(){
+    currentTrack = (currentTrack + 1) % tracks.length;
+    bgMusic.src = tracks[currentTrack];
+    bgMusic.play();
+}
+
+bgMusic.addEventListener("ended", playNextTrack);
+
+// ===== SPEEDRUN TIMER =====
+let gameStartTime = performance.now();
+let pausedTime = 0;
+let pauseStart = 0;
+let isPaused = false;
+
+function getGameTime(){
+    if(isPaused){
+        return pauseStart - gameStartTime - pausedTime;
+    }
+    return performance.now() - gameStartTime - pausedTime;
+}
+
+// ===== AUTO START GAME =====
+function startGame(){
+    canvas.requestPointerLock();
+
+    if(bgMusic.paused){
+        bgMusic.play().catch(()=>{});
+    }
+}
+
+// Start on first interaction anywhere
+document.addEventListener("click", startGame, { once:true });
+
+document.addEventListener("pointerlockchange", lockChangeAlert, false);
+document.addEventListener("mozpointerlockchange", lockChangeAlert, false);
+document.addEventListener("webkitpointerlockchange", lockChangeAlert, false);
+
+function lockChangeAlert(){
+    if(document.pointerLockElement === canvas ||
+       document.mozPointerLockElement === canvas ||
+       document.webkitPointerLockElement === canvas){
+        console.log("Pointer locked");
+        document.addEventListener("mousemove", updateMouseMovement, false);
+    } else {
+        console.log("Pointer unlocked");
+        document.removeEventListener("mousemove", updateMouseMovement, false);
+    }
+}
+
+// ===== MOUSE MOVEMENT =====
+function updateMouseMovement(e){
+    player.angle += e.movementX * 0.0025; // same as before
+}
+
+// ===== MAZE =====
+const TILE = 64;
+const MAP_SIZE = 500;
+let map = [];
+let roomSeed = Math.random()*10000;
+
+function generateRoom(seed){
+    roomSeed = seed;
+    map = [];
+    for(let y=0;y<MAP_SIZE;y++){
+        let row=[];
+        for(let x=0;x<MAP_SIZE;x++){
+            row.push(Math.random()<0.4?1:0);
+        }
+        map.push(row);
+    }
+}
+generateRoom(roomSeed);
+
+// ===== PLAYER =====
+let player = { x:MAP_SIZE*TILE/2, y:MAP_SIZE*TILE/2, angle:0, speed:3 };
+let keys={};
+document.addEventListener("keydown",e=>keys[e.key.toLowerCase()]=true);
+document.addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
+canvas.addEventListener("mousemove",e=>player.angle+=e.movementX*0.0025);
+
+const FOV=Math.PI/3;
+const RAYS=200;
+
+// ===== TELEPORT EVENTS =====
+let teleportEvent = { active:false, type:null, timer:0, state:{} };
+const teleportTypes = [
+    "tunnelVision","blackWhite","invert","hallMirrors","timeBlur","cameraRoll",
+    "delayedWorld","geometryDrift","depthCollapse","softReset","textureMelting",
+    "teleportRejection","silentFrameSkip"
+];
+
+function triggerTeleport(){
+    generateRoom(Math.random()*1000);
+    player.x = MAP_SIZE*TILE/2;
+    player.y = MAP_SIZE*TILE/2;
+    player.angle += Math.PI*(Math.random()-0.5);
+
+    teleportEvent.active=true;
+    teleportEvent.type = teleportTypes[Math.floor(Math.random()*teleportTypes.length)];
+    teleportEvent.timer = { 
+        tunnelVision:180, blackWhite:180, invert:180, hallMirrors:180, timeBlur:180, cameraRoll:180,
+        delayedWorld:1200, geometryDrift:600, depthCollapse:300, softReset:30, textureMelting:240,
+        teleportRejection:60, silentFrameSkip:60
+    }[teleportEvent.type];
+    teleportEvent.state={};
+}
+
+// ===== COLOR POOLS =====
+let colorPools=[];
+for(let i=0;i<8;i++){
+    colorPools.push({
+        x:Math.random()*MAP_SIZE*TILE,
+        y:Math.random()*MAP_SIZE*TILE,
+        radius:TILE*3+Math.random()*TILE*2,
+        intensity:1.5+Math.random()*2
+    });
+}
+function getColorPoolEffect(px,py){
+    for(let p of colorPools){
+        let dx=px-p.x, dy=py-p.y;
+        if(Math.sqrt(dx*dx+dy*dy)<p.radius) return p.intensity;
+    }
+    return 1;
+}
+
+// ===== TEMPORAL GLITCHES =====
+let temporalGlitches=[];
+for(let y=0;y<MAP_SIZE;y++){
+    temporalGlitches[y]=[];
+    for(let x=0;x<MAP_SIZE;x++){
+        temporalGlitches[y][x]={active:false,timer:0};
+    }
+}
+function updateGlitches(){
+    for(let y=0;y<MAP_SIZE;y++){
+        for(let x=0;x<MAP_SIZE;x++){
+            let g=temporalGlitches[y][x];
+            if(!g.active && Math.random()<0.0003){ g.active=true; g.timer=30+Math.random()*60; }
+            if(g.active){ g.timer--; if(g.timer<=0) g.active=false; }
+        }
+    }
+}
+
+
+let gravityShift={active:false,timer:0,rotation:0};
+function maybeTriggerGravity(){
+    if(Math.random()<0.03){
+        gravityShift.active=true;
+        gravityShift.timer=100;
+        gravityShift.rotation=(Math.random()>0.5?1:-1)*(Math.PI/8);
+    }
+}
+
+function colorField(x,y,depth,seed){
+    let t=Date.now()*0.001+seed;
+    let warp=Math.sin(x*0.02+t)*Math.cos(y*0.02+t*0.5)*50;
+    let r=Math.sin(x*0.05+t)*127+128+warp;
+    let g=Math.sin(y*0.05+t*1.5)*127+128+warp;
+    let b=Math.sin((x+y)*0.03+t*2)*127+128+warp;
+    return `rgb(${r|0},${g|0},${b|0})`;
+}
+
+function castRay(angle){
+    let sin=Math.sin(angle), cos=Math.cos(angle);
+    for(let d=0;d<2000;d++){
+        let x=player.x+cos*d;
+        let y=player.y+sin*d;
+        let mx=Math.floor(x/TILE), my=Math.floor(y/TILE);
+        if(mx<0||my<0||mx>=MAP_SIZE||my>=MAP_SIZE) return {dist:d,wall:true,mx,my};
+        if(map[my][mx]===1 && !temporalGlitches[my][mx].active) return {dist:d,wall:true,mx,my};
+    }
+    return {dist:2000,wall:false};
+}
+
+function move(){
+    let dx=0,dy=0;
+    if(keys["w"]||keys["arrowup"]){dx+=Math.cos(player.angle)*player.speed;dy+=Math.sin(player.angle)*player.speed;}
+    if(keys["s"]||keys["arrowdown"]){dx-=Math.cos(player.angle)*player.speed;dy-=Math.sin(player.angle)*player.speed;}
+    if(keys["a"]||keys["arrowleft"]){dx+=Math.cos(player.angle-Math.PI/2)*player.speed;dy+=Math.sin(player.angle-Math.PI/2)*player.speed;}
+    if(keys["d"]||keys["arrowright"]){dx+=Math.cos(player.angle+Math.PI/2)*player.speed;dy+=Math.sin(player.angle+Math.PI/2)*player.speed;}
+    let nx=player.x+dx, ny=player.y+dy;
+    let mx=Math.floor(nx/TILE), my=Math.floor(ny/TILE);
+
+    if(map[my] && map[my][mx]===1){
+        if((mx+my)%6===0){ triggerTeleport(); return; }
+        maybeTriggerGravity();
+        return;
+    }
+    if(map[my] && map[my][mx]===0){ player.x=nx; player.y=ny; }
+}
+
+
+let previousFrame=null;
+function drawMaze(){
+    updateGlitches();
+    let poolEffect=getColorPoolEffect(player.x,player.y);
+
+    mazeCtx.save();
+
+    if(isPaused) return;
+
+
+    if(teleportEvent.active && teleportEvent.type==="cameraRoll"){
+        mazeCtx.translate(mazeCanvas.width/2,mazeCanvas.height/2);
+        mazeCtx.rotate(Math.sin(Date.now()*0.002)*0.3);
+        mazeCtx.translate(-mazeCanvas.width/2,-mazeCanvas.height/2);
+    }
+
+    if(window.shaderAPI){
+        let eventId = 0;
+    
+        if(teleportEvent.active){
+            const map = {
+                tunnelVision:1,
+                blackWhite:2,
+                invert:3,
+                hallMirrors:4,
+                timeBlur:5,
+                cameraRoll:6,
+                delayedWorld:7,
+                geometryDrift:8,
+                depthCollapse:9,
+                softReset:10,
+                textureMelting:11,
+                silentFrameSkip:12
+            };
+            eventId = map[teleportEvent.type] || 0;
+        }
+    
+        window.shaderAPI.setEvent(eventId, teleportEvent.active ? 1.0 : 0.0);
+        window.shaderAPI.setTime(Date.now()*0.001);
+    }    
+
+
+    if(gravityShift.active){
+        mazeCtx.translate(mazeCanvas.width/2,mazeCanvas.height/2);
+        mazeCtx.rotate(gravityShift.rotation);
+        mazeCtx.translate(-mazeCanvas.width/2,-mazeCanvas.height/2);
+        gravityShift.timer--;
+        if(gravityShift.timer<=0) gravityShift.active=false;
+    }
+
+    let horizon=mazeCanvas.height/2;
+
+
+    for(let y=0;y<mazeCanvas.height;y++){
+        let depth=(y-horizon)/(mazeCanvas.height/2);
+        let worldDist=500/(depth||0.0001);
+        let wx=player.x+Math.cos(player.angle)*worldDist;
+        let wy=player.y+Math.sin(player.angle)*worldDist;
+
+
+        if(teleportEvent.active && teleportEvent.type==="delayedWorld"){
+            if(!teleportEvent.state.prevX) teleportEvent.state.prevX=wx;
+            if(!teleportEvent.state.prevY) teleportEvent.state.prevY=wy;
+            wx = teleportEvent.state.prevX + (wx-teleportEvent.state.prevX)*0.05;
+            wy = teleportEvent.state.prevY + (wy-teleportEvent.state.prevY)*0.05;
+            teleportEvent.state.prevX=wx;
+            teleportEvent.state.prevY=wy;
+        }
+
+        if(teleportEvent.active && teleportEvent.type==="geometryDrift"){
+            wx+=Math.sin(y*0.1+Date.now()*0.001)*2;
+            wy+=Math.cos(y*0.1+Date.now()*0.001)*2;
+        }
+
+
+        if(teleportEvent.active && teleportEvent.type==="textureMelting"){
+            wy += (Date.now()*0.05)%50;
+        }
+
+        let wobbleX=Math.sin(Date.now()*0.001*poolEffect+y*0.01)*10*poolEffect;
+        let wobbleY=Math.cos(Date.now()*0.001*poolEffect+y*0.01)*10*poolEffect;
+
+        mazeCtx.fillStyle=colorField(wx+wobbleX,wy+wobbleY,worldDist,roomSeed);
+        mazeCtx.fillRect(0,y,mazeCanvas.width,1);
+    }
+
+
+    for(let i=0;i<RAYS;i++){
+        let angle=player.angle-FOV/2+(i/RAYS)*FOV;
+        let ray=castRay(angle);
+        let dist=ray.dist+Math.sin(ray.dist*0.01+Date.now()*0.002)*50;
+        let height=(TILE*600)/(dist+0.0001);
+        let x=i*(mazeCanvas.width/RAYS);
+        let y=mazeCanvas.height/2-height/2;
+
+        let isTeleportWall=(ray.mx+ray.my)%6===0;
+        mazeCtx.fillStyle=isTeleportWall
+            ? `hsl(${Date.now()*0.1%360},100%,50%)`
+            : colorField(player.x+i,player.y+dist,dist,roomSeed);
+
+        mazeCtx.fillRect(x,y,mazeCanvas.width/RAYS+2,height);
+    }
+
+    mazeCtx.restore();
+
+
+    if(teleportEvent.active){
+    
+        if(teleportEvent.type==="tunnelVision"){
+            let grad=mazeCtx.createRadialGradient(
+                mazeCanvas.width/2,mazeCanvas.height/2,100,
+                mazeCanvas.width/2,mazeCanvas.height/2,mazeCanvas.width/1.2
+            );
+            grad.addColorStop(0,"rgba(0,0,0,0)");
+            grad.addColorStop(1,"rgba(0,0,0,0.8)");
+            mazeCtx.fillStyle=grad;
+            mazeCtx.fillRect(0,0,mazeCanvas.width,mazeCanvas.height);
+        }
+
+
+        if(teleportEvent.type==="blackWhite"){
+            mazeCtx.globalCompositeOperation="saturation";
+            mazeCtx.fillStyle="hsl(0,0%,50%)";
+            mazeCtx.fillRect(0,0,mazeCanvas.width,mazeCanvas.height);
+            mazeCtx.globalCompositeOperation="source-over";
+        }
+
+
+        if(teleportEvent.type==="invert"){
+            mazeCtx.globalCompositeOperation="difference";
+            mazeCtx.fillStyle="white";
+            mazeCtx.fillRect(0,0,mazeCanvas.width,mazeCanvas.height);
+            mazeCtx.globalCompositeOperation="source-over";
+        }
+
+
+        if(teleportEvent.type==="hallMirrors"){
+            mazeCtx.globalAlpha=0.2;
+            mazeCtx.drawImage(mazeCanvas,10,0);
+            mazeCtx.drawImage(mazeCanvas,-10,0);
+            mazeCtx.globalAlpha=1;
+        }
+
+
+        if(teleportEvent.type==="timeBlur" && previousFrame){
+            mazeCtx.globalAlpha=0.3;
+            mazeCtx.drawImage(previousFrame,0,0);
+            mazeCtx.globalAlpha=1;
+        }
+
+
+        if(teleportEvent.type==="softReset"){
+            mazeCtx.fillStyle="white";
+            mazeCtx.fillRect(0,0,mazeCanvas.width,mazeCanvas.height);
+        }
+
+
+        if(teleportEvent.type==="teleportRejection"){
+            player.x -= Math.cos(player.angle)*2;
+            player.y -= Math.sin(player.angle)*2;
+        }
+
+
+        if(teleportEvent.type==="silentFrameSkip"){
+            if(Math.floor(Date.now()/100)%2===0){
+                mazeCtx.globalAlpha=0.2;
+                mazeCtx.drawImage(mazeCanvas,0,0);
+                mazeCtx.globalAlpha=1;
+            }
+        }
+
+        teleportEvent.timer--;
+        if(teleportEvent.timer<=0) teleportEvent.active=false;
+    }
+
+
+if(keys["r"]){
+
+
+    mazeCtx.save();
+    mazeCtx.setTransform(1, 0, 0, 1, 0, 0);
+
+    mazeCtx.fillStyle = "rgba(0,0,0,0.75)";
+    mazeCtx.fillRect(0,0,mazeCanvas.width,mazeCanvas.height);
+
+    mazeCtx.fillStyle = "white";
+    mazeCtx.font = "20px monospace";
+
+    let tileX = Math.floor(player.x / TILE);
+    let tileY = Math.floor(player.y / TILE);
+
+    let time = getGameTime()/1000;
+    let minutes = Math.floor(time/60);
+    let seconds = (time%60).toFixed(2);
+
+    mazeCtx.fillText(`X: ${tileX}`, 40, 60);
+    mazeCtx.fillText(`Y: ${tileY}`, 40, 90);
+    mazeCtx.fillText(`Time: ${minutes}:${seconds.padStart(5,"0")}`, 40, 120);
+
+    mazeCtx.restore();
+}
+
+
+let pauseOverlay = document.createElement("div");
+pauseOverlay.style.cssText = `
+position:fixed;
+top:0;
+left:0;
+width:100%;
+height:100%;
+background:#0a0f2a;
+display:none;
+justify-content:center;
+align-items:center;
+flex-direction:column;
+z-index:9999;
+font-family:monospace;
+color:white;
+`;
+document.body.appendChild(pauseOverlay);
+
+let continueBtn = document.createElement("button");
+continueBtn.innerText = "Continue";
+continueBtn.style.padding = "15px 30px";
+continueBtn.style.fontSize = "18px";
+continueBtn.style.cursor = "pointer";
+pauseOverlay.appendChild(continueBtn);
+
+continueBtn.onclick = ()=>{
+    isPaused = false;
+    pausedTime += performance.now() - pauseStart;
+    pauseOverlay.style.display = "none";
+    canvas.requestPointerLock();
+};
+
+document.addEventListener("keydown", e=>{
+    if(e.key.toLowerCase()==="p"){
+        if(!isPaused){
+            isPaused = true;
+            pauseStart = performance.now();
+            pauseOverlay.style.display = "flex";
+            document.exitPointerLock();
+        }
+    }
+});
+
+
+    previousFrame=document.createElement("canvas");
+    previousFrame.width=mazeCanvas.width;
+    previousFrame.height=mazeCanvas.height;
+    previousFrame.getContext("2d").drawImage(mazeCanvas,0,0);
+}
+
+loop();
+
+</script>
+</body>
+</html>

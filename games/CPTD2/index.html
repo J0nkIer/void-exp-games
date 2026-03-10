@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>CodePad Tower Defense 2</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Audiowide&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+
+</head>
+<body>
+
+<canvas id="game" width="900" height="600"></canvas>
+
+<div id="ui">
+
+    <!-- Top Stat Bar -->
+    <div id="statBar">
+      <div class="stat-card gold" id="goldCard">
+        <span class="label">GOLD</span>
+        <span id="money">150</span>
+      </div>
+  
+      <div class="stat-card lives" id="livesCard">
+        <span class="label">LIVES</span>
+        <span id="lives">20</span>
+      </div>
+  
+      <div class="stat-card wave" id="waveCard">
+        <span class="label">WAVE</span>
+        <span id="wave">0</span>
+      </div>
+    </div>
+  
+    <!-- Tower Selection -->
+    <div class="panel">
+      <div class="panel-title">TOWERS</div>
+      <div id="towerList"></div>
+    </div>
+  
+    <!-- Control Buttons -->
+    <div class="panel">
+      <button id="startWave" class="primary-btn">START NEXT WAVE</button>
+      <button id="sellMode" class="secondary-btn">SELL MODE</button>
+      <div id="info" class="small"></div>
+    </div>
+  
+    <!-- Upgrade Panel -->
+    <div id="selectedPanel" class="upgrade-panel">
+      <div class="panel-title">UNIT CONTROL</div>
+      <div id="selectedTitle" class="unit-name">No tower selected</div>
+      <div id="selectedStats" class="unit-stats"></div>
+  
+      <button id="upgradeAll" class="upgrade-all">UPGRADE</button>
+      <button id="sellBtn" class="sell-btn">SELL TOWER</button>
+    </div>
+  
+  </div>  
+
+<script src="game.js"></script>
+
+</body>
+</html>

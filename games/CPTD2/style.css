@@ -1,0 +1,171 @@
+body {
+    font-family: 'Audiowide', cursive;
+    margin: 0;
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+    background: #0b140b;
+  }
+  
+  /* Canvas */
+  #game {
+    background: #218129;
+    width: calc(100% - 340px);
+    border-right: 3px solid #00ff88;
+  }
+  
+  /* UI Container */
+  #ui {
+    width: 340px;
+    padding: 15px;
+    background: #0f1f0f;
+    color: #00ff88;
+    box-shadow: inset 0 0 40px #001a00;
+    overflow-y: auto;
+    position: relative;
+  }
+  
+  /* Grid Overlay */
+  #ui::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,255,100,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,255,100,0.04) 1px, transparent 1px);
+    background-size: 20px 20px;
+    pointer-events: none;
+  }
+  
+  /* Stat Bar */
+  #statBar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+  }
+  
+  .stat-card {
+    flex: 1;
+    background: #111;
+    padding: 10px;
+    border-radius: 10px;
+    text-align: center;
+    box-shadow: 0 0 10px #002b00;
+    transition: all 0.3s ease;
+  }
+  
+  .stat-card .label {
+    font-size: 10px;
+    opacity: 0.7;
+  }
+  
+  .gold {
+    color: gold;
+  }
+  
+  .lives.low {
+    color: red;
+    animation: shake 0.4s;
+  }
+  
+  .wave.active {
+    color: red;
+    box-shadow: 0 0 10px red;
+  }
+  
+  /* Panels */
+  .panel,
+  .upgrade-panel {
+    background: #111;
+    padding: 12px;
+    border-radius: 12px;
+    margin-bottom: 15px;
+    box-shadow: 0 0 15px #001f00;
+  }
+  
+  .panel-title {
+    font-size: 12px;
+    margin-bottom: 10px;
+    opacity: 0.8;
+  }
+  
+  /* Tower Buttons */
+  .tower-btn {
+    background: #1a1a1a;
+    border-left: 4px solid #00ff88;
+    padding: 8px;
+    margin-bottom: 6px;
+    border-radius: 8px;
+    transition: 0.2s;
+  }
+  
+  .tower-btn:hover {
+    transform: scale(1.03);
+    box-shadow: 0 0 10px #00ff88;
+  }
+  
+  .tower-btn.disabled {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+  
+  /* Buttons */
+  button {
+    font-family: inherit;
+    padding: 10px;
+    border-radius: 10px;
+    border: none;
+    cursor: pointer;
+    transition: 0.2s;
+  }
+  
+  .primary-btn {
+    background: linear-gradient(45deg, #00aa44, #00ff88);
+    color: black;
+  }
+  
+  .primary-btn.pulse {
+    animation: pulse 1.5s infinite;
+  }
+  
+  .secondary-btn {
+    background: linear-gradient(45deg, #333, #555);
+    color: #00ff88;
+  }
+  
+  .secondary-btn.active {
+    background: linear-gradient(45deg, darkred, red);
+    box-shadow: 0 0 10px red;
+  }
+  
+  .upgrade-all {
+    background: linear-gradient(45deg, #0055ff, #00ccff);
+    color: white;
+    margin-top: 8px;
+  }
+  
+  .upgrade-all.maxed {
+    box-shadow: 0 0 15px #00ccff;
+  }
+  
+  .sell-btn {
+    background: linear-gradient(45deg, darkred, red);
+    color: white;
+    margin-top: 8px;
+  }
+  
+  /* Animations */
+  @keyframes pulse {
+    0% { box-shadow: 0 0 5px #00ff88; }
+    50% { box-shadow: 0 0 20px #00ff88; }
+    100% { box-shadow: 0 0 5px #00ff88; }
+  }
+  
+  @keyframes shake {
+    0% { transform: translateX(0); }
+    25% { transform: translateX(-3px); }
+    50% { transform: translateX(3px); }
+    75% { transform: translateX(-3px); }
+    100% { transform: translateX(0); }
+  }
+  

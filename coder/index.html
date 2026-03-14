@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Coder</title>
+
+<!-- CodeMirror -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/show-hint.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/xml-hint.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/javascript-hint.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/hint/css-hint.min.js"></script>
+
+<!-- JSZip -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+
+<style>
+body{margin:0;font-family:monospace;display:flex;height:100vh;overflow:hidden;background:#121212;color:#00FF00;}
+#sidebar{width:250px;background:#1e1e1e;color:#00FF00;padding:10px;overflow:auto;}
+#main{flex:1;display:flex;flex-direction:row;overflow:hidden;}
+#editorContainer{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+#tabs{background:#2d2d2d;display:flex;overflow-x:auto;}
+.tab{padding:6px 10px;cursor:pointer;background:#2d2d2d;color:#00FF00;border-right:1px solid #444;}
+.tab.active{background:#444;}
+#editor{flex:1;font-family:monospace;font-size:14px;overflow:auto;}
+#preview{width:40%;border-left:2px solid #333;}
+button{margin:2px;}
+.file{cursor:pointer;margin-left:10px;}
+.folder{font-weight:bold;margin-top:4px;cursor:pointer;display:flex;align-items:center;}
+.fileActions{margin-left:5px;cursor:pointer;color:red;}
+.collapse-btn{margin-right:4px;cursor:pointer;user-select:none;}
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+<h3>Project</h3>
+<button onclick="newFile()">New File</button>
+<button onclick="newFolder()">New Folder</button>
+<button onclick="importFiles()">Import Files/Folders</button>
+<button onclick="importZIP()">Import ZIP</button>
+<button onclick="exportZIP()">Export ZIP</button>
+<button onclick="runProject()">Run</button>
+<input type="file" id="importInput" multiple webkitdirectory style="display:none">
+<input type="file" id="importZIPInput" style="display:none">
+<div id="tree"></div>
+</div>
+
+<div id="main">
+<div id="editorContainer">
+<div id="tabs"></div>
+<div id="editor"></div>
+</div>
+<iframe id="preview"></iframe>
+</div>
+
+<script>
+let openTabs=[], activeFile=null, draggedNode=null;
+const binaryExtensions=["jpg","jpeg","png","gif","mp4","mov","mp3","ogg","m4a"];
+let db;
+
+// ---------- IndexedDB Setup ----------
+function openDB(){
+    return new Promise((resolve,reject)=>{
+        const request=indexedDB.open("webIDE",1);
+        request.onupgradeneeded=e=>{
+            db=e.target.result;
+            if(!db.objectStoreNames.contains("files")) db.createObjectStore("files",{keyPath:"id",autoIncrement:true});
+        };
+        request.onsuccess=e=>{ db=e.target.result; resolve(db); };
+        request.onerror=e=>reject(e);
+    });
+}
+
+function saveNode(node){
+    const tx=db.transaction("files","readwrite");
+    const store=tx.objectStore("files");
+    store.put(node);
+}
+
+function deleteNodeDB(node){
+    const tx=db.transaction("files","readwrite");
+    const store=tx.objectStore("files");
+    if(node.id) store.delete(node.id);
+}
+
+function loadAllNodes(){
+    return new Promise(resolve=>{
+        const tx=db.transaction("files","readonly");
+        const store=tx.objectStore("files");
+        const req=store.getAll();
+        req.onsuccess=e=>resolve(e.target.result);
+    });
+}
+
+// ---------- Project Tree ----------
+let fs={name:"root",type:"folder",children:[],mainFile:null};
+
+async function initFS(){
+    await openDB();
+    const nodes=await loadAllNodes();
+    const map={};
+    nodes.forEach(n=>{ map[n.id]=n; n.children=[]; });
+    nodes.forEach(n=>{
+        if(n.parentId){ const p=map[n.parentId]; if(p) p.children.push(n); else fs.children.push(n); } 
+        else fs.children.push(n);
+    });
+    const mainNode=nodes.find(n=>n.isMain);
+    if(mainNode) fs.mainFile=mainNode;
+    renderTree();
+}
+
+// ---------- File / Folder Functions ----------
+function newFile(){ const name=prompt("File name"); if(!name) return; const node={name,type:"file",content:"",parentId:null}; saveNode(node); fs.children.push(node); renderTree(); }
+function newFolder(){ const name=prompt("Folder name"); if(!name) return; const node={name,type:"folder",children:[],parentId:null,collapsed:false}; saveNode(node); fs.children.push(node); renderTree(); }
+
+function deleteNode(node){
+    function remove(arr){
+        const idx=arr.indexOf(node);
+        if(idx>-1){ arr.splice(idx,1); return true; }
+        for(let n of arr){ if(n.children && remove(n.children)) return true; }
+        return false;
+    }
+    remove(fs.children);
+    if(openTabs.includes(node)) openTabs.splice(openTabs.indexOf(node),1);
+    if(activeFile===node) activeFile=null;
+    if(fs.mainFile===node) fs.mainFile=null;
+    deleteNodeDB(node);
+    if(node.children) node.children.forEach(c=>deleteNodeDB(c));
+    renderTree(); renderTabs();
+    editor.setValue(activeFile?activeFile.content:"");
+}
+
+// ---------- Drag-and-Drop ----------
+function moveNode(node,targetFolder){
+    if(targetFolder.type!=="folder") return;
+    node.parentId=targetFolder.id||null;
+    saveNode(node);
+    renderTree();
+}
+
+// ---------- Tree Rendering ----------
+function renderTree(){
+    const tree=document.getElementById("tree"); tree.innerHTML="";
+    function draw(node,parent){
+        const div=document.createElement("div"); div.style.display="flex"; div.style.alignItems="center";
+        div.draggable=true;
+        div.ondragstart=e=>{ draggedNode=node; e.dataTransfer.effectAllowed="move"; };
+        div.ondragover=e=>{ e.preventDefault(); e.dataTransfer.dropEffect="move"; };
+        div.ondrop=e=>{ e.preventDefault(); if(draggedNode && draggedNode!==node && node.type==="folder"){ moveNode(draggedNode,node); draggedNode=null; } };
+
+        if(node.type==="folder"){
+            div.className="folder";
+            const collapse=document.createElement("span");
+            collapse.textContent=node.collapsed?"▶":"▼"; collapse.className="collapse-btn";
+            collapse.onclick=e=>{ node.collapsed=!node.collapsed; renderTree(); };
+            div.appendChild(collapse);
+
+            const nameSpan=document.createElement("span");
+            nameSpan.textContent="📁 "+node.name;
+            nameSpan.onclick=()=>{ node.collapsed=!node.collapsed; renderTree(); };
+            div.appendChild(nameSpan);
+
+            const del=document.createElement("span");
+            del.textContent="✖"; del.className="fileActions"; del.onclick=()=>deleteNode(node);
+            div.appendChild(del);
+
+            parent.appendChild(div);
+            const childContainer=document.createElement("div"); childContainer.style.marginLeft="16px"; childContainer.style.display=node.collapsed?"none":"block";
+            parent.appendChild(childContainer);
+            node.children.forEach(c=>draw(c,childContainer));
+        }
+
+        if(node.type==="file"){
+            div.className="file";
+            const nameSpan=document.createElement("span");
+            const isMain=fs.mainFile===node;
+            nameSpan.textContent=(isMain?"< ":"")+"📄 "+node.name;
+            nameSpan.onclick=()=>openFile(node);
+            nameSpan.oncontextmenu=e=>{ e.preventDefault(); if(node.name.endsWith(".html")){ fs.mainFile=node; saveNode({...node,isMain:true}); renderTree(); } };
+            div.appendChild(nameSpan);
+
+            const del=document.createElement("span");
+            del.textContent="✖"; del.className="fileActions"; del.onclick=()=>deleteNode(node);
+            div.appendChild(del);
+
+            parent.appendChild(div);
+        }
+    }
+    draw(fs,tree);
+}
+
+// ---------- Tabs ----------
+function renderTabs(){
+    const tabs=document.getElementById("tabs"); tabs.innerHTML="";
+    openTabs.forEach(f=>{ const div=document.createElement("div"); div.textContent=f.name; div.className="tab"; if(f===activeFile) div.classList.add("active"); div.onclick=()=>openFile(f); tabs.appendChild(div); });
+}
+
+// ---------- Editor / Preview ----------
+const editor=CodeMirror(document.getElementById("editor"),{lineNumbers:true,mode:"htmlmixed",theme:"default",extraKeys:{"Ctrl-Space":"autocomplete"}});
+function setMode(name){ if(name.endsWith(".js")) editor.setOption("mode","javascript"); else if(name.endsWith(".css")) editor.setOption("mode","css"); else if(name.endsWith(".html")) editor.setOption("mode","htmlmixed"); else editor.setOption("mode","javascript"); }
+function updatePreview(){
+    const iframe=document.getElementById("preview");
+    const htmlFile=fs.mainFile||fs.children.find(n=>n.name==="index.html");
+    if(!htmlFile) return;
+    if(htmlFile.blob) iframe.src=URL.createObjectURL(htmlFile.blob);
+    else iframe.srcdoc=htmlFile.content;
+}
+
+function openFile(file){
+    activeFile=file;
+    if(!openTabs.includes(file)) openTabs.push(file);
+    renderTabs();
+    if(file.blob){
+        const ext=file.name.split(".").pop().toLowerCase();
+        let html="";
+        if(["jpg","jpeg","png","gif"].includes(ext)) html=`<img src="${URL.createObjectURL(file.blob)}" style="max-width:100%;max-height:100%">`;
+        else if(["mp4","mov"].includes(ext)) html=`<video src="${URL.createObjectURL(file.blob)}" controls style="max-width:100%;max-height:100%"></video>`;
+        else if(["mp3","ogg","m4a"].includes(ext)) html=`<audio src="${URL.createObjectURL(file.blob)}" controls></audio>`;
+        document.getElementById("preview").srcdoc=html;
+        editor.setValue("Binary file previewed above.");
+    } else{
+        editor.setValue(file.content||"");
+        setMode(file.name);
+        updatePreview();
+    }
+}
+
+// ---------- Run ----------
+function runProject(){
+    const htmlFile=fs.mainFile||fs.children.find(n=>n.name==="index.html");
+    if(!htmlFile) return alert("No main HTML file selected.");
+    const win=window.open("about:blank");
+    if(htmlFile.blob) win.location.href=URL.createObjectURL(htmlFile.blob);
+    else{ win.document.open(); win.document.write(htmlFile.content); win.document.close(); }
+}
+
+// ---------- Import Files / Folders ----------
+function importFiles(){
+    const input=document.getElementById("importInput");
+    input.setAttribute("webkitdirectory","");
+    input.onchange=e=>{
+        [...e.target.files].forEach(file=>{
+            const pathParts=file.webkitRelativePath.split("/");
+            addFileToFS(fs,pathParts,file);
+        });
+    }
+    input.click();
+}
+function addFileToFS(node,pathParts,file){
+    if(pathParts.length===1){
+        const reader=new FileReader();
+        if(binaryExtensions.includes(file.name.split(".").pop().toLowerCase())){
+            reader.readAsArrayBuffer(file);
+            reader.onload=ev=>{
+                const blob=new Blob([ev.target.result]);
+                const f={name:file.name,type:"file",blob,parentId:null};
+                saveNode(f); node.children.push(f); renderTree();
+            };
+        } else{
+            reader.readAsText(file);
+            reader.onload=ev=>{
+                const f={name:file.name,type:"file",content:ev.target.result,parentId:null};
+                saveNode(f); node.children.push(f); renderTree();
+            };
+        }
+    } else{
+        const folderName=pathParts[0];
+        let folder=node.children.find(c=>c.name===folderName && c.type==="folder");
+        if(!folder){ folder={name:folderName,type:"folder",children:[],collapsed:false,parentId:null}; saveNode(folder); node.children.push(folder);}
+        addFileToFS(folder,pathParts.slice(1),file);
+    }
+}
+
+// ---------- ZIP Export ----------
+async function exportZIP(){
+    const zip=new JSZip();
+    async function add(node,path=""){
+        if(node.type==="file"){
+            if(node.blob) zip.file(path+node.name,node.blob);
+            else zip.file(path+node.name,node.content);
+        }
+        if(node.type==="folder") for(const c of node.children) await add(c,path+node.name+"/");
+    }
+    for(const n of fs.children) await add(n);
+    const blob=await zip.generateAsync({type:"blob"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="project.zip"; a.click();
+}
+
+// ---------- ZIP Import ----------
+function importZIP(){
+    const input=document.getElementById("importZIPInput");
+    input.onchange=e=>{
+        const file=e.target.files[0]; if(!file) return;
+        const reader=new FileReader();
+        reader.onload=async ev=>{
+            const zip=await JSZip.loadAsync(ev.target.result);
+            zip.forEach(async (path,zipEntry)=>{
+                if(!zipEntry.dir){
+                    const ext=path.split(".").pop().toLowerCase();
+                    if(binaryExtensions.includes(ext)){
+                        const blob=await zipEntry.async("blob");
+                        const f={name:path.split("/").pop(),type:"file",blob,parentId:null};
+                        saveNode(f); fs.children.push(f); renderTree();
+                    } else{
+                        const text=await zipEntry.async("text");
+                        const f={name:path.split("/").pop(),type:"file",content:text,parentId:null};
+                        saveNode(f); fs.children.push(f); renderTree();
+                    }
+                }
+            });
+        };
+        reader.readAsArrayBuffer(file);
+    }
+    input.click();
+}
+
+// ---------- Startup ----------
+initFS();
+</script>
+
+</body>
+</html>
